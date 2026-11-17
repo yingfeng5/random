@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>8-max NLHE study</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">No-limit hold'em · discounted CFR</p>
+      <h1>8-max study</h1>
+    </div>
+    <nav>
+      <button type="button" id="tab-preflop" class="tab on">Preflop</button>
+      <button type="button" id="tab-postflop" class="tab">Postflop</button>
+    </nav>
+  </header>
+
+  <section id="view-preflop">
+    <div class="layout">
+      <aside>
+        <p class="meta" id="preflop-meta">Loading the 100bb library…</p>
+        <h2>First in</h2>
+        <div class="seats" id="rfi-seats"></div>
+        <h2>Line</h2>
+        <ol class="line" id="line"></ol>
+        <div class="actions" id="line-actions"></div>
+        <p class="note" id="terminal-note" hidden>This action ends the hand. There is no further decision.</p>
+        <h2>Colors</h2>
+        <ul class="legend" id="legend"></ul>
+      </aside>
+      <div class="board-wrap">
+        <div class="matrix-head">
+          <h2 id="matrix-title">UTG</h2>
+          <p id="matrix-sub"></p>
+        </div>
+        <div id="matrix" class="matrix"></div>
+        <p id="cell-detail" class="detail">Click a hand.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-postflop" hidden>
+    <form id="spot-form">
+      <div class="spot-grid">
+        <label>Board
+          <input id="board" value="Kh7d2c2s3d" autocomplete="off" spellcheck="false">
+        </label>
+        <label>Pot (bb)
+          <input id="pot" type="number" min="0" step="0.5" value="6">
+        </label>
+        <label>Iterations
+          <input id="iterations" type="number" min="1" step="1" value="200">
+        </label>
+        <label>Raise cap
+          <input id="max-agg" type="number" min="1" max="4" step="1" value="3">
+        </label>
+        <label>Chance samples
+          <input id="chance" type="number" min="1" step="1" placeholder="exact">
+        </label>
+      </div>
+      <p class="note">Sizes are 33% pot, 75% pot, pot, and all-in. Check, call, and fold stay available. Leave chance samples empty to deal every card; set it on a wide flop so the solve finishes.</p>
+      <div id="players"></div>
+      <div class="row-actions">
+        <button type="button" id="add-player">Add seat</button>
+        <button type="button" id="example-3way">3-way example</button>
+        <button type="submit" id="solve">Solve</button>
+      </div>
+      <p id="solve-status" class="meta"></p>
+    </form>
+    <div id="results" hidden>
+      <div class="result-head">
+        <h2>Strategy</h2>
+        <div id="node-picker" class="seats"></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead id="result-head"></thead>
+          <tbody id="result-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <script src="/app.js"></script>
+</body>
+</html>
