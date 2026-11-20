@@ -73,8 +73,17 @@ def run(hands_dir: Path, interval: float = 0.5, grab=None, frames: int | None = 
                 previous_image = current_image
                 time.sleep(interval)
                 continue
-            previous_reading = read_image(previous_image)
-            current_reading = read_image(current_image)
+            try:
+                previous_reading = read_image(previous_image)
+                current_reading = read_image(current_image)
+            except Exception:
+                # One bad OCR read must not end the session.
+                print("ocr failed, skipped frame", flush=True)
+                previous_image = current_image
+                if frames is not None and seen >= frames:
+                    break
+                time.sleep(interval)
+                continue
             # Drop anything older than these two frames. Nothing is written to disk.
             if readings_agree(previous_reading, current_reading):
                 signature = current_reading.signature()

@@ -76,6 +76,24 @@ def test_stable_reading_that_ends_a_hand_prints_closed(tmp_path: Path, capsys, m
     assert list(tmp_path.glob("*.png")) == []
 
 
+def test_one_ocr_failure_does_not_stop_capture(tmp_path: Path, capsys, monkeypatch):
+    reading = Reading(board=["8c"], hole_cards=["Qh", "Jd"])
+    calls = {"n": 0}
+
+    def read(_image):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise UnicodeDecodeError("gbk", b"\xff", 0, 1, "illegal multibyte sequence")
+        return reading
+
+    monkeypatch.setattr("hdpoker.capture.read_image", read)
+    count = run(tmp_path, interval=0, grab=lambda: object(), frames=3)
+    output = capsys.readouterr().out
+    assert "ocr failed, skipped frame" in output
+    assert "board 8c | hole Qh Jd | hand open" in output
+    assert count == 1
+
+
 def test_grab_frame_refuses_off_windows():
     from hdpoker.capture import grab_frame
 

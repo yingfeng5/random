@@ -27,6 +27,27 @@ def tesseract_available() -> bool:
     return shutil.which("tesseract") is not None
 
 
+def _run_tesseract(command: list[str]) -> str:
+    """Run tesseract and return stdout as text.
+
+    Chinese Windows defaults to GBK. Forcing UTF-8 avoids UnicodeDecodeError
+    in the subprocess reader thread. A missing stdout is empty text, and one
+    failed call does not propagate.
+    """
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except Exception:
+        return ""
+    return result.stdout or ""
+
+
 def ocr_image(image: Image.Image, psm: int = 7, whitelist: str | None = None) -> str:
     if not tesseract_available():
         raise RuntimeError("tesseract is not installed")
@@ -37,50 +58,52 @@ def ocr_image(image: Image.Image, psm: int = 7, whitelist: str | None = None) ->
         command = ["tesseract", str(path), "stdout", "--psm", str(psm)]
         if whitelist:
             command.extend(["-c", f"tessedit_char_whitelist={whitelist}"])
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        stdout = _run_tesseract(command)
+    except Exception:
+        return ""
     finally:
         path.unlink(missing_ok=True)
-    return " ".join(result.stdout.split())
+    return " ".join(stdout.split())
 
 
 def ocr_tsv(image: Image.Image, psm: int = 11) -> list[dict]:
     """Word boxes in the image's own pixel coordinates."""
     if not tesseract_available():
         raise RuntimeError("tesseract is not installed")
-    with tempfile.TemporaryDirectory() as directory:
-        stem = Path(directory) / "ocr"
-        image.save(stem.with_suffix(".png"))
-        subprocess.run(
-            ["tesseract", str(stem.with_suffix(".png")), str(stem), "--psm", str(psm), "tsv"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        tsv_path = stem.with_suffix(".tsv")
-        if not tsv_path.exists():
-            return []
-        rows = []
-        for line in tsv_path.read_text(encoding="utf-8", errors="replace").splitlines()[1:]:
-            parts = line.split("\t")
-            if len(parts) < 12 or not parts[11].strip():
-                continue
-            try:
-                conf = float(parts[10])
-            except ValueError:
-                continue
-            if conf < 35:
-                continue
-            rows.append(
-                {
-                    "text": parts[11],
-                    "left": int(parts[6]),
-                    "top": int(parts[7]),
-                    "width": int(parts[8]),
-                    "height": int(parts[9]),
-                    "conf": conf,
-                }
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            stem = Path(directory) / "ocr"
+            image.save(stem.with_suffix(".png"))
+            _run_tesseract(
+                ["tesseract", str(stem.with_suffix(".png")), str(stem), "--psm", str(psm), "tsv"]
             )
-        return rows
+            tsv_path = stem.with_suffix(".tsv")
+            if not tsv_path.exists():
+                return []
+            rows = []
+            for line in tsv_path.read_text(encoding="utf-8", errors="replace").splitlines()[1:]:
+                parts = line.split("\t")
+                if len(parts) < 12 or not parts[11].strip():
+                    continue
+                try:
+                    conf = float(parts[10])
+                except ValueError:
+                    continue
+                if conf < 35:
+                    continue
+                rows.append(
+                    {
+                        "text": parts[11],
+                        "left": int(parts[6]),
+                        "top": int(parts[7]),
+                        "width": int(parts[8]),
+                        "height": int(parts[9]),
+                        "conf": conf,
+                    }
+                )
+            return rows
+    except Exception:
+        return []
 
 
 def match_status(text: str | None) -> str | None:
