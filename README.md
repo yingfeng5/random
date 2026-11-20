@@ -16,6 +16,8 @@ python -m hdpoker.capture
 ```
 
 Capture keeps only the current frame and the previous one in memory. It does not save screenshots.
+Each accepted reading prints one line: the board, your hole cards, and whether that reading closed a hand.
+Ctrl+C writes the hand that is still open, then prints how many files were written.
 When a hand ends it writes `hands/<YYYYMMDD_HHMMSS>_<n>.json` and `.txt`.
 The Win32 grabber is in `hdpoker/win32cap.py` and is imported only on Windows.
 

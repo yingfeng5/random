@@ -25,6 +25,14 @@ def readings_agree(first: Reading, second: Reading) -> bool:
     return first.signature() == second.signature()
 
 
+def format_accepted(reading: Reading, closed: bool) -> str:
+    """One line for a stable reading: board, hole cards, and if that reading ended a hand."""
+    board = " ".join(reading.board) if reading.board else "-"
+    hole = " ".join(reading.hole_cards) if reading.hole_cards else "-"
+    state = "closed" if closed else "open"
+    return f"board {board} | hole {hole} | hand {state}"
+
+
 def write_hand(directory: Path, hand: Hand, when: datetime, number: int) -> tuple[Path, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     stem = directory / f"{when.strftime('%Y%m%d_%H%M%S')}_{number}"
@@ -57,27 +65,32 @@ def run(hands_dir: Path, interval: float = 0.5, grab=None, frames: int | None = 
     previous_image = None
     last_signature = None
     seen = 0
-    while frames is None or seen < frames:
-        current_image = grab()
-        seen += 1
-        if previous_image is None:
+    try:
+        while frames is None or seen < frames:
+            current_image = grab()
+            seen += 1
+            if previous_image is None:
+                previous_image = current_image
+                time.sleep(interval)
+                continue
+            previous_reading = read_image(previous_image)
+            current_reading = read_image(current_image)
+            # Drop anything older than these two frames. Nothing is written to disk.
+            if readings_agree(previous_reading, current_reading):
+                signature = current_reading.signature()
+                if signature != last_signature:
+                    closed_hands = machine.feed(current_reading)
+                    for hand in closed_hands:
+                        written += 1
+                        write_hand(hands_dir, hand, datetime.now(), written)
+                    print(format_accepted(current_reading, closed=bool(closed_hands)), flush=True)
+                    last_signature = signature
             previous_image = current_image
+            if frames is not None and seen >= frames:
+                break
             time.sleep(interval)
-            continue
-        previous_reading = read_image(previous_image)
-        current_reading = read_image(current_image)
-        # Drop anything older than these two frames.
-        if readings_agree(previous_reading, current_reading):
-            signature = current_reading.signature()
-            if signature != last_signature:
-                for hand in machine.feed(current_reading):
-                    written += 1
-                    write_hand(hands_dir, hand, datetime.now(), written)
-                last_signature = signature
-        previous_image = current_image
-        if frames is not None and seen >= frames:
-            break
-        time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
     if machine.hand is not None:
         written += 1
         write_hand(hands_dir, machine.close(), datetime.now(), written)
@@ -91,11 +104,8 @@ def main() -> None:
     parser.add_argument("--hands", type=Path, default=Path("hands"))
     parser.add_argument("--interval", type=float, default=0.5)
     args = parser.parse_args()
-    try:
-        count = run(args.hands, interval=args.interval)
-    except KeyboardInterrupt:
-        count = 0
-    print(f"wrote {count} hand(s) under {args.hands}")
+    count = run(args.hands, interval=args.interval)
+    print(f"wrote {count} hand(s) under {args.hands}", flush=True)
 
 
 if __name__ == "__main__":
