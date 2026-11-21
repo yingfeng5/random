@@ -1,0 +1,23 @@
+[project]
+name = "hdpoker"
+version = "1.0.0"
+description = "Read an HD Poker 6-max window into a hand history. Records what is on screen and does not suggest bets."
+requires-python = ">=3.11"
+dependencies = ["pillow", "numpy"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+hdpoker-replay = "hdpoker.replay:main"
+hdpoker-capture = "hdpoker.capture:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["hdpoker*"]
+
+[tool.setuptools.package-data]
+hdpoker = ["templates/ranks/*.png", "templates/suits/*.png"]
