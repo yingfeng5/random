@@ -65,6 +65,7 @@ def run(hands_dir: Path, interval: float = 0.5, grab=None, frames: int | None = 
     previous_image = None
     last_signature = None
     seen = 0
+    reported_failure = False
     try:
         while frames is None or seen < frames:
             current_image = grab()
@@ -76,8 +77,11 @@ def run(hands_dir: Path, interval: float = 0.5, grab=None, frames: int | None = 
             try:
                 previous_reading = read_image(previous_image)
                 current_reading = read_image(current_image)
-            except Exception:
-                # One bad OCR read must not end the session.
+            except Exception as exc:
+                # One bad read must not end the session. The reason is printed once.
+                if not reported_failure:
+                    print(exc, file=sys.stderr, flush=True)
+                    reported_failure = True
                 print("ocr failed, skipped frame", flush=True)
                 previous_image = current_image
                 if frames is not None and seen >= frames:

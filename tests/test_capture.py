@@ -76,6 +76,31 @@ def test_stable_reading_that_ends_a_hand_prints_closed(tmp_path: Path, capsys, m
     assert list(tmp_path.glob("*.png")) == []
 
 
+def test_tesseract_exit_does_not_skip_the_frame(tmp_path: Path, capsys, monkeypatch):
+    """A tessdata failure used to raise and skip every grab. The frame is still read."""
+    import subprocess
+
+    import hdpoker.ocrutil as ocrutil
+
+    ocrutil._failure_reported = False
+
+    def fake_run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr='Please make sure the TESSDATA_PREFIX environment variable is set to your "tessdata" directory.\n',
+        )
+
+    monkeypatch.setattr(ocrutil.subprocess, "run", fake_run)
+    count = run(tmp_path, interval=0, grab=lambda: Image.new("RGB", (160, 100), (30, 90, 40)), frames=3)
+    captured = capsys.readouterr()
+    assert captured.err.count("TESSDATA_PREFIX") == 1
+    assert "board - | hole - | hand open" in captured.out
+    assert "ocr failed, skipped frame" not in captured.out
+    assert count == 1
+
+
 def test_one_ocr_failure_does_not_stop_capture(tmp_path: Path, capsys, monkeypatch):
     reading = Reading(board=["8c"], hole_cards=["Qh", "Jd"])
     calls = {"n": 0}

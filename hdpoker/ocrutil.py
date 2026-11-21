@@ -6,9 +6,11 @@ Anything else stays unread.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -22,17 +24,84 @@ _BLINDS_RE = re.compile(r"(\d{2,5})\s*/\s*(\d{2,5})")
 _NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9]{2,16}")
 _WORD_RE = re.compile(r"[A-Z]+(?:\s+[A-Z]+)?")
 
+# UB Mannheim's Windows installer. ``tesseract --version`` succeeds without
+# language data; OCR fails unless this tessdata directory is passed explicitly.
+_INSTALL_ROOTS = (
+    Path(r"C:\Program Files\Tesseract-OCR"),
+    Path(r"C:\Program Files (x86)\Tesseract-OCR"),
+)
+_failure_reported = False
+
+
+def tesseract_executable() -> str | None:
+    """The tesseract binary on PATH, or the UB Mannheim install."""
+    found = shutil.which("tesseract") or shutil.which("tesseract.exe")
+    if found:
+        return found
+    for root in _INSTALL_ROOTS:
+        exe = root / "tesseract.exe"
+        if exe.is_file():
+            return str(exe)
+    return None
+
 
 def tesseract_available() -> bool:
-    return shutil.which("tesseract") is not None
+    return tesseract_executable() is not None
 
 
-def _run_tesseract(command: list[str]) -> str:
+def tessdata_dir(executable: str | None = None) -> Path | None:
+    """Directory that contains ``eng.traineddata``.
+
+    Tesseract 5 treats both ``--tessdata-dir`` and ``TESSDATA_PREFIX`` as that
+    directory, not its parent. ``--version`` does not check it, so a working
+    version command can still mean every OCR call exits 1.
+    """
+    candidates: list[Path] = []
+    if executable:
+        candidates.append(Path(executable).resolve().parent / "tessdata")
+    for root in _INSTALL_ROOTS:
+        candidates.append(root / "tessdata")
+    prefix = os.environ.get("TESSDATA_PREFIX")
+    if prefix:
+        folder = Path(prefix)
+        candidates.append(folder)
+        candidates.append(folder / "tessdata")
+    for folder in candidates:
+        if (folder / "eng.traineddata").is_file():
+            return folder
+    return None
+
+
+def _report_tesseract_failure(detail: str) -> None:
+    """Print tesseract's own stderr once. Later frames stay quiet."""
+    global _failure_reported
+    if _failure_reported:
+        return
+    _failure_reported = True
+    text = (detail or "tesseract failed").strip()
+    print(text, file=sys.stderr, flush=True)
+
+
+def _tesseract_invocation(image: str, output: str, psm: int, whitelist: str | None = None) -> tuple[list[str], dict[str, str] | None]:
+    executable = tesseract_executable() or "tesseract"
+    command = [executable, image, output, "--psm", str(psm), "-l", "eng"]
+    data = tessdata_dir(executable)
+    env = None
+    if data is not None:
+        command.extend(["--tessdata-dir", str(data)])
+        env = os.environ.copy()
+        env["TESSDATA_PREFIX"] = str(data)
+    if whitelist:
+        command.extend(["-c", f"tessedit_char_whitelist={whitelist}"])
+    return command, env
+
+
+def _run_tesseract(command: list[str], env: dict[str, str] | None = None) -> str:
     """Run tesseract and return stdout as text.
 
     Chinese Windows defaults to GBK. Forcing UTF-8 avoids UnicodeDecodeError
-    in the subprocess reader thread. A missing stdout is empty text, and one
-    failed call does not propagate.
+    in the subprocess reader thread. A missing stdout is empty text. A non-zero
+    exit is reported once from stderr and does not propagate.
     """
     try:
         result = subprocess.run(
@@ -42,41 +111,56 @@ def _run_tesseract(command: list[str]) -> str:
             encoding="utf-8",
             errors="replace",
             check=False,
+            env=env,
         )
-    except Exception:
+    except Exception as exc:
+        _report_tesseract_failure(str(exc))
         return ""
+    if result.returncode != 0:
+        _report_tesseract_failure(result.stderr or f"tesseract exited {result.returncode}")
     return result.stdout or ""
 
 
 def ocr_image(image: Image.Image, psm: int = 7, whitelist: str | None = None) -> str:
     if not tesseract_available():
-        raise RuntimeError("tesseract is not installed")
-    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
-        path = Path(handle.name)
-    try:
-        image.save(path)
-        command = ["tesseract", str(path), "stdout", "--psm", str(psm)]
-        if whitelist:
-            command.extend(["-c", f"tessedit_char_whitelist={whitelist}"])
-        stdout = _run_tesseract(command)
-    except Exception:
+        _report_tesseract_failure(
+            "tesseract not found. Expected it on PATH or at C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+        )
         return ""
-    finally:
-        path.unlink(missing_ok=True)
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as handle:
+            path = Path(handle.name)
+        try:
+            image.save(path)
+            command, env = _tesseract_invocation(str(path), "stdout", psm, whitelist)
+            stdout = _run_tesseract(command, env)
+        finally:
+            # Windows can keep the temp png locked for a moment. That must not
+            # abort the frame.
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+    except Exception as exc:
+        _report_tesseract_failure(str(exc))
+        return ""
     return " ".join(stdout.split())
 
 
 def ocr_tsv(image: Image.Image, psm: int = 11) -> list[dict]:
     """Word boxes in the image's own pixel coordinates."""
     if not tesseract_available():
-        raise RuntimeError("tesseract is not installed")
+        _report_tesseract_failure(
+            "tesseract not found. Expected it on PATH or at C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+        )
+        return []
     try:
         with tempfile.TemporaryDirectory() as directory:
             stem = Path(directory) / "ocr"
             image.save(stem.with_suffix(".png"))
-            _run_tesseract(
-                ["tesseract", str(stem.with_suffix(".png")), str(stem), "--psm", str(psm), "tsv"]
-            )
+            command, env = _tesseract_invocation(str(stem.with_suffix(".png")), str(stem), psm)
+            command.append("tsv")
+            _run_tesseract(command, env)
             tsv_path = stem.with_suffix(".tsv")
             if not tsv_path.exists():
                 return []
@@ -102,7 +186,8 @@ def ocr_tsv(image: Image.Image, psm: int = 11) -> list[dict]:
                     }
                 )
             return rows
-    except Exception:
+    except Exception as exc:
+        _report_tesseract_failure(str(exc))
         return []
 
 
