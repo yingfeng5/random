@@ -13,20 +13,7 @@ import numpy as np
 from PIL import Image, ImageEnhance
 
 from hdpoker.cards import read_card, templates_ready, load_templates
-from hdpoker.layout import (
-    BANNER,
-    BLINDS,
-    BOARD_SLOTS,
-    BUTTONS,
-    CHAT,
-    FELT,
-    HEADER_CARDS,
-    POT,
-    SEATS,
-    TABLE,
-    SeatLayout,
-    hero_seat,
-)
+from hdpoker.layout import Layout, Rect, SeatLayout, layout_for
 from hdpoker.ocrutil import (
     match_status,
     ocr_image,
@@ -34,7 +21,6 @@ from hdpoker.ocrutil import (
     parse_bb,
     parse_blinds,
     parse_name,
-    parse_number,
     white_mask,
 )
 from hdpoker.reading import ACTIONS, Reading, SeatReading, same_cards
@@ -60,27 +46,29 @@ def read_image(image: Image.Image) -> Reading:
     if templates_ready():
         load_templates()
     rgb = image.convert("RGB")
-    table_name = _table_name(rgb)
-    small_blind, big_blind = parse_blinds(ocr_image(_boost(BLINDS.crop(rgb)), psm=6))
-    board = _board(rgb)
-    pot_bb, pot_text = _pot(rgb)
-    button = _button_seat(rgb)
-    chat = _chat(rgb)
-    banner = _banner(rgb)
-    options = _options(rgb)
-    hero_index = hero_seat().index
-    header = _cards_in(HEADER_CARDS.crop(rgb), limit=2)
-    hole_seat = _cards_in(hero_seat().cards.crop(rgb), limit=2)
+    layout = layout_for(rgb)
+    table_name = _table_name(rgb, layout)
+    small_blind, big_blind = _blinds(rgb, layout)
+    board = _board(rgb, layout)
+    pot_bb, pot_text = _pot(rgb, layout)
+    button = _button_seat(rgb, layout)
+    chat = _chat(rgb, layout)
+    banner = _banner(rgb, layout)
+    options = _options(rgb, layout)
+    hero = layout.hero()
+    hero_index = hero.index
+    header = _cards_in(layout.header_cards.crop(rgb), limit=2)
+    hole_seat = _cards_in(hero.cards.crop(rgb), limit=2)
     hole = _reconcile_hole(header, hole_seat)
     seats = []
-    bets = _bets(rgb)
+    bets = _bets(rgb, layout)
     # Shown cards are only read once the board is complete or the banner is up,
     # so live hole cards and the community cards are not treated as a showdown.
     read_shown = banner is not None or len(board) >= 5
-    for layout in SEATS:
-        seat = _seat(rgb, layout, bets)
+    for seat_layout in layout.seats:
+        seat = _seat(rgb, seat_layout, bets, layout.pot)
         if read_shown:
-            zone = layout.shown
+            zone = seat_layout.shown
             shown = _cards_in(zone.crop(rgb), limit=2)
             if shown and len(shown) >= 2:
                 seat.shown_cards = shown[:2]
@@ -110,18 +98,33 @@ def _boost(image: Image.Image, scale: int = 4) -> Image.Image:
     return ImageEnhance.Contrast(resized).enhance(1.7)
 
 
-def _table_name(image: Image.Image) -> str | None:
-    text = ocr_image(_boost(TABLE.crop(image), 3), psm=6)
+def _table_name(image: Image.Image, layout: Layout) -> str | None:
+    text = ocr_image(_boost(layout.table.crop(image), 3), psm=6)
     folded = " ".join(text.split())
     if re.search(r"reef", folded, re.IGNORECASE) and re.search(r"#\s*2", folded):
         return "[Standard] The Reef #2"
+    match = re.search(r"\[[^\]]+\]\s*.*?#\s*\d+", folded)
+    if match:
+        return " ".join(match.group(0).split())
     match = re.search(r"\[[^\]]+\].*", folded)
     return match.group(0).strip() if match else None
 
 
-def _board(image: Image.Image) -> list[str]:
+def _blinds(image: Image.Image, layout: Layout) -> tuple[int | None, int | None]:
+    crop = layout.blinds.crop(image)
+    parsed = parse_blinds(ocr_image(_boost(crop), psm=6))
+    if parsed[0] is not None:
+        return parsed
+    # White stakes on a tan header. A contrast boost smears this skin.
+    array = np.asarray(crop.convert("L"), dtype=np.int16)
+    mask = Image.fromarray(np.where(array > 200, 0, 255).astype(np.uint8))
+    scaled = mask.resize((max(1, mask.width * 5), max(1, mask.height * 5)), Image.Resampling.NEAREST)
+    return parse_blinds(ocr_image(scaled.convert("RGB"), psm=7, whitelist="0123456789/ "))
+
+
+def _board(image: Image.Image, layout: Layout) -> list[str]:
     cards = []
-    for slot in BOARD_SLOTS:
+    for slot in layout.board_slots:
         crop = slot.crop(image)
         if not _card_present(crop):
             break
@@ -151,14 +154,34 @@ def _cards_in(zone: Image.Image, limit: int) -> list[str] | None:
         height = bottom - top
         if width < 14 or height < 22:
             continue
-        ratio = height / width
+        ratio = height / max(1, width)
         if ratio < 0.9 or ratio > 2.2:
             continue
-        faces.append(zone.crop((left, top, right, bottom)))
+        faces.append((left, top, right, bottom))
+    faces = _drop_outer_boxes(faces)
     if not faces:
         return None
     faces = faces[:limit]
-    return [read_card(face) for face in faces]
+    return [read_card(zone.crop(box)) for box in faces]
+
+
+def _drop_outer_boxes(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
+    """A white blob that wraps two cards is not itself a card."""
+    kept = []
+    for box in boxes:
+        left, top, right, bottom = box
+        contains = False
+        for other in boxes:
+            if other == box:
+                continue
+            cx = (other[0] + other[2]) / 2
+            cy = (other[1] + other[3]) / 2
+            if left < cx < right and top < cy < bottom:
+                contains = True
+                break
+        if not contains:
+            kept.append(box)
+    return kept
 
 
 def _boxes(mask: np.ndarray) -> list[tuple[int, int, int, int]]:
@@ -208,8 +231,8 @@ def _reconcile_hole(header: list[str] | None, seat: list[str] | None) -> list[st
     return None
 
 
-def _pot(image: Image.Image) -> tuple[float | None, str | None]:
-    crop = POT.crop(image)
+def _pot(image: Image.Image, layout: Layout) -> tuple[float | None, str | None]:
+    crop = layout.pot.crop(image)
     mask = white_mask(crop, minimum=175)
     scaled = mask.resize((max(1, mask.width * 6), max(1, mask.height * 6)), Image.Resampling.NEAREST)
     text = ocr_image(scaled.convert("RGB"), psm=6, whitelist="0123456789.MAINPOTBB ")
@@ -218,12 +241,17 @@ def _pot(image: Image.Image) -> tuple[float | None, str | None]:
     return parse_bb(text)
 
 
-def _seat(image: Image.Image, layout: SeatLayout, bets: list[tuple[float, str, float, float]]) -> SeatReading:
+def _seat(
+    image: Image.Image,
+    layout: SeatLayout,
+    bets: list[tuple[float, str, float, float]],
+    pot: Rect,
+) -> SeatReading:
     plate = layout.plate.crop(image)
     name = _name(plate)
     stack_bb, stack_text = _stack(plate)
     status = _status(image, layout)
-    bet_bb, bet_text = _nearest_bet(layout.bet_anchor, bets)
+    bet_bb, bet_text = _nearest_bet(layout.bet_anchor, bets, pot)
     return SeatReading(
         index=layout.index,
         name=name,
@@ -238,15 +266,58 @@ def _seat(image: Image.Image, layout: SeatLayout, bets: list[tuple[float, str, f
 
 def _name(plate: Image.Image) -> str | None:
     width, height = plate.size
-    # The name is the upper line, inset past the rank badge.
-    line = plate.crop((int(width * 0.16), int(height * 0.02), int(width * 0.96), int(height * 0.62)))
-    candidates = [_read_name_line(line), _read_bright_name(line), _read_plate_color(plate)]
-    names = [name for name in candidates if name]
-    if not names:
+    # Stop at the white stack line. A fixed fraction clips a tall name or
+    # swallows the chips on a short plate.
+    bottom = _name_bottom(plate)
+    line = plate.crop((int(width * 0.10), int(height * 0.02), int(width * 0.98), int(height * bottom)))
+    green = _read_name_line(line)
+    bright = _read_bright_name(line)
+    color = _read_plate_color(plate)
+    return _choose_name(green, bright, color)
+
+
+def _name_bottom(plate: Image.Image) -> float:
+    array = np.asarray(plate.convert("L"), dtype=np.int16)
+    height, width = array.shape
+    if height < 8:
+        return 0.50
+    body = array[:, int(width * 0.28) : int(width * 0.88)]
+    fraction = (body > 185).mean(axis=1)
+    baseline = float(np.median(fraction))
+    start = None
+    run = 0
+    for y in range(int(height * 0.32), int(height * 0.86)):
+        if fraction[y] > baseline + 0.08:
+            run += 1
+            if run >= 4:
+                start = y - 3
+                break
+        else:
+            run = 0
+    if start is None:
+        return 0.55
+    return min(0.64, max(0.40, (start - 1) / height))
+
+
+def _choose_name(green: str | None, bright: str | None, color: str | None) -> str | None:
+    candidates = [name for name in (green, bright, color) if name]
+    if not candidates:
         return None
-    # A capitalised reading beats "pweetBet17" when "SweetBet17" is also there.
-    names.sort(key=lambda item: (item[0].isupper(), item[-1].isdigit(), len(item)), reverse=True)
-    return names[0]
+    if green:
+        # "pweetBet17" and "SweetBet17" are the same name. Keep the capital.
+        for other in candidates:
+            if other.lower()[1:] == green.lower()[1:] and other[0].isupper() and not green[0].isupper():
+                return other
+        chosen = green
+        for other in candidates:
+            low = other.lower()
+            base = green.lower()
+            if (low.startswith(base) or base.startswith(low)) and abs(len(other) - len(green)) <= 3:
+                if len(other) > len(chosen):
+                    chosen = other
+        return chosen
+    candidates.sort(key=lambda item: (item[0].isupper(), item[-1].isdigit(), len(item)), reverse=True)
+    return candidates[0]
 
 
 def _read_plate_color(plate: Image.Image) -> str | None:
@@ -294,18 +365,27 @@ def _clean_name(name: str | None) -> str | None:
 
 
 def _stack(plate: Image.Image) -> tuple[float | None, str | None]:
-    mask = white_mask(plate, minimum=185)
-    text = ocr_image(
-        mask.resize((mask.width * 3, mask.height * 3), Image.Resampling.NEAREST),
-        psm=6,
-        whitelist="0123456789.",
+    width, height = plate.size
+    # Several crops and thresholds. A clipped line reads "280" as "750" or
+    # "40" once; the value that comes back more than once is the stack.
+    bands = (
+        plate.crop((int(width * 0.15), int(height * 0.46), int(width * 0.92), int(height * 0.80))),
+        plate.crop((int(width * 0.15), int(height * 0.38), int(width * 0.92), int(height * 0.72))),
     )
-    value = parse_number(text)
-    if value is None:
+    votes: dict[float, int] = {}
+    for band in bands:
+        array = np.asarray(band.convert("L"), dtype=np.int16)
+        for minimum in (155, 165, 175):
+            mask = Image.fromarray(np.where(array > minimum, 0, 255).astype(np.uint8))
+            scaled = mask.resize((max(1, mask.width * 5), max(28, mask.height * 5)), Image.Resampling.NEAREST)
+            text = ocr_image(scaled.convert("RGB"), psm=7, whitelist="0123456789.BB ")
+            value, _label = parse_bb(text)
+            if value is None or value > 5000:
+                continue
+            votes[value] = votes.get(value, 0) + 1
+    if not votes:
         return None, None
-    # A stack label is the chips behind, not a tiny chip denomination.
-    if value > 10000:
-        return None, None
+    value = max(votes, key=lambda item: (votes[item], -item))
     text_out = f"{value:.2f}".rstrip("0").rstrip(".") + " BB"
     return value, text_out
 
@@ -317,6 +397,7 @@ def _status(image: Image.Image, layout: SeatLayout) -> str | None:
         return None
     hits: dict[str, int] = {}
     saw_bar = False
+    saw_letters = False
     steps = 5
     for step in range(steps):
         top = int(step / steps * height * 0.55)
@@ -336,10 +417,18 @@ def _status(image: Image.Image, layout: SeatLayout) -> str | None:
             status = match_status(text)
             if status:
                 hits[status] = hits.get(status, 0) + 1
+            letters = [ch for ch in text if ch.isalpha()]
+            # "EEE" is a window frame. A label has more than one letter shape.
+            if len(letters) >= 3 and len(set(letters)) >= 2:
+                saw_letters = True
+        dark = _dark_on_bright(strip)
+        if dark:
+            hits[dark] = hits.get(dark, 0) + 1
     if hits:
         return max(hits, key=lambda word: (hits[word], len(word)))
-    # A label bar with letters we cannot place in the vocabulary stays unknown.
-    if saw_bar:
+    # A label bar whose letters are not in the vocabulary stays unknown.
+    # The cabin window is a bright flat region with no letters, so it is not one.
+    if saw_bar and saw_letters:
         return "UNKNOWN"
     return None
 
@@ -349,6 +438,28 @@ def _ink_fraction(mask: Image.Image) -> float:
     if array.size == 0:
         return 0.0
     return float((array < 128).mean())
+
+
+def _dark_on_bright(strip: Image.Image) -> str | None:
+    """Black letters on a yellow ALL IN bar. Light-blue labels use white text."""
+    array = np.asarray(strip.convert("RGB"), dtype=np.int16)
+    if array.size == 0:
+        return None
+    red, green, blue = array[:, :, 0], array[:, :, 1], array[:, :, 2]
+    yellow = (red > 170) & (green > 130) & (blue < 140) & ((red.astype(int) - blue) > 40)
+    if float(yellow.mean()) < 0.35:
+        return None
+    luminance = (red + green + blue) / 3
+    dark = luminance < 90
+    if float(dark.mean()) < 0.01:
+        return None
+    mask = Image.fromarray(np.where(dark, 0, 255).astype(np.uint8))
+    text = ocr_image(
+        mask.resize((mask.width * 6, max(24, mask.height * 6)), Image.Resampling.LANCZOS),
+        psm=7,
+        whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZ ",
+    )
+    return match_status(text)
 
 
 def _label_bar(strip: Image.Image) -> bool:
@@ -369,9 +480,8 @@ def _timer(plate: Image.Image) -> bool:
     return float(hot.mean()) > 0.04
 
 
-def _bets(image: Image.Image) -> list[tuple[float, str, float, float]]:
-    from hdpoker.layout import FELT as felt
-
+def _bets(image: Image.Image, layout: Layout) -> list[tuple[float, str, float, float]]:
+    felt = layout.felt
     crop = _boost(felt.crop(image), 2)
     rows = ocr_tsv(crop, psm=11)
     found = []
@@ -401,13 +511,52 @@ def _bets(image: Image.Image) -> list[tuple[float, str, float, float]]:
                 if not any(abs(item[2] - x) < 0.01 and abs(item[3] - y) < 0.01 for item in found):
                     found.append((value, original, x, y))
                 break
+    for amount, original, x, y in _bet_pills(image, felt):
+        if not any(abs(item[2] - x) < 0.015 and abs(item[3] - y) < 0.015 for item in found):
+            found.append((amount, original, x, y))
     return found
 
 
-def _nearest_bet(anchor: tuple[float, float], bets: list[tuple[float, str, float, float]]) -> tuple[float | None, str | None]:
+def _bet_pills(image: Image.Image, felt: Rect) -> list[tuple[float, str, float, float]]:
+    """Read a small dark chip label when the whole-felt pass misses it."""
+    crop = felt.crop(image)
+    array = np.asarray(crop.convert("RGB"), dtype=np.int16)
+    if array.size == 0:
+        return []
+    red, green, blue = array[:, :, 0], array[:, :, 1], array[:, :, 2]
+    luminance = (red + green + blue) / 3
+    chroma = np.maximum(np.maximum(red, green), blue) - np.minimum(np.minimum(red, green), blue)
+    dark = (luminance < 85) & (chroma < 55)
+    found = []
+    width, height = image.size
+    for left, top, right, bottom in _boxes(dark):
+        box_w = (right - left) / width
+        box_h = (bottom - top) / height
+        if not (0.012 < box_w < 0.08 and 0.008 < box_h < 0.055):
+            continue
+        if box_h <= 0 or not 1.15 <= (box_w / box_h) <= 5.5:
+            continue
+        pill = crop.crop((left, top, right, bottom))
+        mask = white_mask(pill, minimum=160)
+        scaled = mask.resize((max(1, mask.width * 4), max(1, mask.height * 4)), Image.Resampling.NEAREST)
+        text = ocr_image(scaled.convert("RGB"), psm=7, whitelist="0123456789.BB ")
+        amount, original = parse_bb(text)
+        if amount is None:
+            continue
+        x = felt.x + ((left + right) / 2) / crop.width * felt.w
+        y = felt.y + ((top + bottom) / 2) / crop.height * felt.h
+        found.append((amount, original or "", x, y))
+    return found
+
+
+def _nearest_bet(
+    anchor: tuple[float, float],
+    bets: list[tuple[float, str, float, float]],
+    pot: Rect,
+) -> tuple[float | None, str | None]:
     best = None
     best_distance = 0.07
-    pot_box = (POT.x, POT.y, POT.x + POT.w, POT.y + POT.h)
+    pot_box = (pot.x, pot.y, pot.x + pot.w, pot.y + pot.h)
     for amount, original, x, y in bets:
         if pot_box[0] <= x <= pot_box[2] and pot_box[1] <= y <= pot_box[3]:
             continue
@@ -420,7 +569,7 @@ def _nearest_bet(anchor: tuple[float, float], bets: list[tuple[float, str, float
     return best
 
 
-def _button_seat(image: Image.Image) -> int | None:
+def _button_seat(image: Image.Image, layout: Layout) -> int | None:
     array = np.asarray(image.convert("RGB"), dtype=np.int16)
     height, width = array.shape[:2]
     red, green, blue = array[:, :, 0], array[:, :, 1], array[:, :, 2]
@@ -445,17 +594,17 @@ def _button_seat(image: Image.Image) -> int | None:
     best_seat = None
     best_distance = 0.08
     for cx, cy, _area in candidates:
-        for layout in SEATS:
-            bx, by = layout.button.center()
+        for seat_layout in layout.seats:
+            bx, by = seat_layout.button.center()
             distance = ((cx - bx) ** 2 + (cy - by) ** 2) ** 0.5
             if distance < best_distance:
                 best_distance = distance
-                best_seat = layout.index
+                best_seat = seat_layout.index
     return best_seat
 
 
-def _chat(image: Image.Image) -> list[str]:
-    text = ocr_image(_boost(CHAT.crop(image), 3), psm=6)
+def _chat(image: Image.Image, layout: Layout) -> list[str]:
+    text = ocr_image(_boost(layout.chat.crop(image), 3), psm=6)
     lines = []
     for raw in text.splitlines() if "\n" in text else [text]:
         pass
@@ -472,8 +621,8 @@ def _chat(image: Image.Image) -> list[str]:
     return lines
 
 
-def _banner(image: Image.Image) -> str | None:
-    text = ocr_image(_boost(BANNER.crop(image), 3), psm=6).upper()
+def _banner(image: Image.Image, layout: Layout) -> str | None:
+    text = ocr_image(_boost(layout.banner.crop(image), 3), psm=6).upper()
     text = " ".join(text.split())
     if "BEAT YOUR" not in text and "STRAIGHT" not in text:
         return None
@@ -486,8 +635,10 @@ def _banner(image: Image.Image) -> str | None:
     return None
 
 
-def _options(image: Image.Image) -> list[str]:
-    text = ocr_image(_boost(BUTTONS.crop(image), 2), psm=6).upper()
+def _options(image: Image.Image, layout: Layout) -> list[str]:
+    text = ocr_image(_boost(layout.buttons.crop(image), 2), psm=6).upper()
+    # The sit-back control is not a betting action.
+    text = text.replace("I'M BACK", " ").replace("IM BACK", " ").replace("I AM BACK", " ")
     found = []
     for word in _OPTION_WORDS:
         if word in text:

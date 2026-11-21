@@ -70,10 +70,34 @@ def read_card(image: Image.Image) -> str:
     rank = _match(rank_glyph, _RANKS, canvas=(48, RANK_HEIGHT))
     if rank is None:
         rank = _ocr_rank(rank_glyph)
+    if rank is None:
+        rank = _ocr_rank_face(trimmed)
     suit = _match_suit(suit_glyph, color)
     if rank is None or suit is None:
         return "unknown"
     return f"{rank}{suit}"
+
+
+def _ocr_rank_face(image: Image.Image) -> str | None:
+    """Read a large index when the corner glyph is too small to match."""
+    width, height = image.size
+    if width < 8 or height < 12:
+        return None
+    top = image.crop((0, 0, max(1, int(width * 0.8)), max(1, int(height * 0.62))))
+    array = np.asarray(top.convert("RGB"), dtype=np.int16)
+    red, green, blue = array[:, :, 0], array[:, :, 1], array[:, :, 2]
+    ink = ((red < 105) & (green < 105) & (blue < 105)) | (
+        (red > 95) & (red > green + 22) & (red > blue + 22) & (green < 170) & (blue < 170)
+    )
+    if int(ink.sum()) < 8:
+        return None
+    mask = Image.fromarray(np.where(ink, 0, 255).astype(np.uint8))
+    mask = mask.resize((max(16, mask.width * 8), max(16, mask.height * 8)), Image.Resampling.NEAREST)
+    from hdpoker.ocrutil import ocr_image
+
+    text = ocr_image(mask.convert("RGB"), psm=10, whitelist="AJKQT2345678910")
+    token = "".join(ch for ch in text if ch.isalnum())
+    return _OCR_RANK.get(token)
 
 
 def _ocr_rank(glyph: np.ndarray | None) -> str | None:
@@ -250,7 +274,20 @@ def _match_suit(glyph: np.ndarray | None, color: str) -> str | None:
     subset = {name: template for name, template in _SUITS.items() if name in allowed}
     if not subset:
         return None
-    return _match(glyph, subset, canvas=(SUIT_SIZE, SUIT_SIZE))
+    prepared = _normalize(glyph, (SUIT_SIZE, SUIT_SIZE))
+    scores = {
+        name: _score(prepared, _normalize(template, (SUIT_SIZE, SUIT_SIZE)))
+        for name, template in subset.items()
+    }
+    best = max(scores, key=scores.get)
+    if scores[best] < MIN_SCORE:
+        return None
+    # A tiny club and a tiny spade score almost the same. Clubs are wide
+    # across the top; spades come to a point.
+    if color != "red" and "c" in scores and "s" in scores and abs(scores["c"] - scores["s"]) < 0.08:
+        top = float(prepared[:8].mean())
+        return "c" if top >= 0.27 else "s"
+    return best
 
 
 def _normalize(glyph: np.ndarray, canvas: tuple[int, int]) -> np.ndarray:

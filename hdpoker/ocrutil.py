@@ -111,6 +111,8 @@ def match_status(text: str | None) -> str | None:
     if not text:
         return None
     cleaned = " ".join(text.upper().split())
+    cleaned = re.sub(r"[^A-Z ]", "", cleaned)
+    cleaned = " ".join(cleaned.split())
     cleaned = cleaned.replace("SITTINGOUT", "SITTING OUT").replace("ALLIN", "ALL IN")
     if cleaned in STATUS_WORDS:
         return cleaned
