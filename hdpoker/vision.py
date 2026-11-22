@@ -23,7 +23,7 @@ from hdpoker.ocrutil import (
     parse_name,
     white_mask,
 )
-from hdpoker.reading import ACTIONS, Reading, SeatReading, same_cards
+from hdpoker.reading import ACTIONS, Reading, SeatReading
 
 _OPTION_WORDS = ("FOLD", "CHECK", "CALL", "BET", "ALL IN", "RAISE")
 _STRENGTH = {
@@ -55,11 +55,6 @@ def read_image(image: Image.Image) -> Reading:
     chat = _chat(rgb, layout)
     banner = _banner(rgb, layout)
     options = _options(rgb, layout)
-    hero = layout.hero()
-    hero_index = hero.index
-    header = _cards_in(layout.header_cards.crop(rgb), limit=2)
-    hole_seat = _cards_in(hero.cards.crop(rgb), limit=2)
-    hole = _reconcile_hole(header, hole_seat)
     seats = []
     bets = _bets(rgb, layout)
     # Shown cards are only read once the board is complete or the banner is up,
@@ -73,13 +68,19 @@ def read_image(image: Image.Image) -> Reading:
             if shown and len(shown) >= 2:
                 seat.shown_cards = shown[:2]
         seats.append(seat)
+    # The hero moves. The green plate names them; hole cards are that seat's cards.
+    hero_index = _hero_seat_index(rgb, layout, seats)
+    hole_seat = None
+    if hero_index is not None:
+        hole_seat = _cards_in(layout.seats[hero_index].cards.crop(rgb), limit=2)
+    hole = list(hole_seat) if _pair_known(hole_seat) else hole_seat
     return Reading(
         table_name=table_name,
         small_blind=small_blind,
         big_blind=big_blind,
         hero_seat=hero_index,
         hole_cards=hole,
-        hole_cards_header=header,
+        hole_cards_header=None,
         hole_cards_seat=hole_seat,
         board=board,
         pot_bb=pot_bb,
@@ -161,25 +162,30 @@ def _cards_in(zone: Image.Image, limit: int) -> list[str] | None:
     faces = _drop_outer_boxes(faces)
     if not faces:
         return None
-    faces = faces[:limit]
-    return [read_card(zone.crop(box)) for box in faces]
+    read = [(box, read_card(zone.crop(box))) for box in faces]
+    known = [item for item in read if item[1] != "unknown"]
+    chosen = known if len(known) >= limit else read
+    return [card for _box, card in chosen[:limit]]
 
 
 def _drop_outer_boxes(boxes: list[tuple[int, int, int, int]]) -> list[tuple[int, int, int, int]]:
-    """A white blob that wraps two cards is not itself a card."""
+    """Drop a white blob that wraps a smaller card. A card is not dropped for overlapping a larger blob."""
     kept = []
     for box in boxes:
-        left, top, right, bottom = box
-        contains = False
+        area = (box[2] - box[0]) * (box[3] - box[1])
+        contains_smaller = False
         for other in boxes:
             if other == box:
                 continue
+            other_area = (other[2] - other[0]) * (other[3] - other[1])
+            if other_area >= area:
+                continue
             cx = (other[0] + other[2]) / 2
             cy = (other[1] + other[3]) / 2
-            if left < cx < right and top < cy < bottom:
-                contains = True
+            if box[0] < cx < box[2] and box[1] < cy < box[3]:
+                contains_smaller = True
                 break
-        if not contains:
+        if not contains_smaller:
             kept.append(box)
     return kept
 
@@ -216,19 +222,36 @@ def _pair_known(cards: list[str] | None) -> bool:
     return bool(cards) and len(cards) == 2 and all(card and card != "unknown" for card in cards)
 
 
-def _reconcile_hole(header: list[str] | None, seat: list[str] | None) -> list[str] | None:
-    header_known = _pair_known(header)
-    seat_known = _pair_known(seat)
-    if header_known and seat_known:
-        if same_cards(header, seat):
-            return list(header)
-        return ["unknown", "unknown"]
-    # A source that did not read is not a disagreement.
-    if header_known:
-        return list(header)
-    if seat_known:
-        return list(seat)
-    return None
+def _green_fraction(crop: Image.Image) -> float:
+    array = np.asarray(crop.convert("RGB"), dtype=np.int16)
+    if array.size == 0:
+        return 0.0
+    red, green, blue = array[:, :, 0], array[:, :, 1], array[:, :, 2]
+    plate = (green > 70) & (green > red + 12) & (green > blue + 8) & (green < 230)
+    return float(plate.mean())
+
+
+def _hero_seat_index(image: Image.Image, layout: Layout, seats: list[SeatReading]) -> int | None:
+    """The hero is whoever is sitting on the green plate, found by that name.
+
+    The green plate moves when the user changes seats. The name on it is looked
+    up among the seats, and that seat's cards are the hole cards.
+    """
+    best_index = None
+    best_green = 0.12
+    for seat_layout in layout.seats:
+        green = _green_fraction(seat_layout.plate.crop(image))
+        if green > best_green:
+            best_green = green
+            best_index = seat_layout.index
+    if best_index is None:
+        return None
+    hero = next((seat for seat in seats if seat.index == best_index), None)
+    if hero and hero.name:
+        named = [seat for seat in seats if seat.name == hero.name]
+        if len(named) == 1:
+            return named[0].index
+    return best_index
 
 
 def _pot(image: Image.Image, layout: Layout) -> tuple[float | None, str | None]:

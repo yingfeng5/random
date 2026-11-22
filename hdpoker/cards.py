@@ -280,13 +280,14 @@ def _match_suit(glyph: np.ndarray | None, color: str) -> str | None:
         for name, template in subset.items()
     }
     best = max(scores, key=scores.get)
+    # A small club and a small spade score almost the same, sometimes under the
+    # usual cutoff. Clubs are wide across the top; spades come to a point.
+    if color != "red" and "c" in scores and "s" in scores and abs(scores["c"] - scores["s"]) < 0.08:
+        if max(scores["c"], scores["s"]) >= 0.40:
+            top = float(prepared[:8].mean())
+            return "c" if top >= 0.27 else "s"
     if scores[best] < MIN_SCORE:
         return None
-    # A tiny club and a tiny spade score almost the same. Clubs are wide
-    # across the top; spades come to a point.
-    if color != "red" and "c" in scores and "s" in scores and abs(scores["c"] - scores["s"]) < 0.08:
-        top = float(prepared[:8].mean())
-        return "c" if top >= 0.27 else "s"
     return best
 
 

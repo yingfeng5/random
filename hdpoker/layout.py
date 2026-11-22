@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class Rect:
@@ -248,16 +250,33 @@ BOARD_SLOTS = WIDE.board_slots
 SEATS = WIDE.seats
 
 
-def layout_for(image) -> Layout:
-    """Pick the calibrated skin from the window's aspect ratio.
+def _plate_fit(crop) -> float:
+    """How much of a crop looks like a seat plate, green or dark."""
+    array = np.asarray(crop.convert("RGB"), dtype=np.int16)
+    if array.size == 0:
+        return 0.0
+    red, green, blue = array[:, :, 0], array[:, :, 1], array[:, :, 2]
+    luminance = (red + green + blue) / 3.0
+    hero = (green > 70) & (green > red + 12) & (green > blue + 8) & (green < 230)
+    other = (luminance < 90) & (luminance > 15) & ((blue + 10) > red)
+    return max(float(hero.mean()), float(other.mean()) * 0.6)
 
-    Wide beach samples are about 1.80. The cabin window is about 1.60.
-    A window at least 1.70 wide uses the beach boxes.
+
+def layout_for(image) -> Layout:
+    """Pick the skin whose six seat plates actually sit on nameplates.
+
+    A cabin table stretched to 16:9 is still the cabin UI. Aspect is only the
+    fallback when neither set of plates matches.
     """
-    _width, height = image.size
-    if not height:
+    rgb = image.convert("RGB")
+    wide = sum(_plate_fit(seat.plate.crop(rgb)) for seat in WIDE.seats)
+    cabin = sum(_plate_fit(seat.plate.crop(rgb)) for seat in CABIN.seats)
+    if cabin > wide + 0.25:
+        return CABIN
+    if wide > cabin + 0.25:
         return WIDE
-    if (_width / height) >= 1.70:
+    _width, height = image.size
+    if height and (_width / height) >= 1.70:
         return WIDE
     return CABIN
 

@@ -48,7 +48,10 @@ def test_aspect_ratio_picks_the_skin():
     assert cabin.size[0] / cabin.size[1] < 1.70
     assert layout_for(wide).name == "wide"
     assert layout_for(cabin).name == "cabin"
-    assert layout_for(wide).hero().plate == WIDE.hero().plate
+    # The same cabin UI stretched to 16:9 still uses the cabin plates.
+    stretched = cabin.resize((1920, 1080))
+    assert stretched.size[0] / stretched.size[1] >= 1.70
+    assert layout_for(stretched).name == "cabin"
 
 
 def test_im_back_is_not_an_action_word():
@@ -63,7 +66,10 @@ def test_cabin_window_reads_the_table_cards_and_bets():
     assert reading.table_name == "[Standard] The Reef #1"
     assert (reading.small_blind, reading.big_blind) == (250, 500)
     assert reading.board == []
+    # The jack pip is black and club-shaped. The three is a red heart.
     assert reading.hole_cards == ["Jc", "3h"]
+    hero = next(seat for seat in reading.seats if seat.name == "TDawn")
+    assert reading.hero_seat == hero.index
     assert reading.hero_options == []
     assert "PRE-FLOP" not in " ".join(seat.status or "" for seat in reading.seats)
 
