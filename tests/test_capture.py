@@ -7,7 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 from hdpoker.capture import format_accepted, readings_agree, run, write_hand
-from hdpoker.reading import Reading
+from hdpoker.reading import Reading, SeatReading
 from hdpoker.schema import sample_hand
 
 
@@ -59,9 +59,80 @@ def test_ctrl_c_writes_the_open_hand_and_prints_the_reading(tmp_path: Path, caps
     assert list(tmp_path.glob("*.png")) == []
 
 
+def _named(board, hole, button=0):
+    return Reading(
+        board=list(board),
+        hole_cards=list(hole),
+        hero_seat=0,
+        button_seat=button,
+        seats=[SeatReading(index=0, name="TDawn")],
+    )
+
+
+def test_flickering_fields_still_write_a_second_hand_when_the_board_clears(tmp_path: Path, monkeypatch):
+    flop_a = Reading(
+        board=["unknown", "unknown", "unknown"],
+        hero_seat=0,
+        button_seat=1,
+        seats=[SeatReading(index=0, name="violets", stack_bb=100)],
+    )
+    flop_b = Reading(
+        board=["unknown", "unknown", "unknown"],
+        hero_seat=0,
+        button_seat=1,
+        seats=[SeatReading(index=0, name="violets", stack_bb=99)],
+    )
+    empty_a = Reading(
+        board=[],
+        hero_seat=0,
+        button_seat=1,
+        hole_cards=["Ah", "Kd"],
+        seats=[SeatReading(index=0, name="violets", stack_bb=100)],
+    )
+    empty_b = Reading(
+        board=[],
+        hero_seat=0,
+        button_seat=1,
+        hole_cards=["Ah", "Kd"],
+        seats=[SeatReading(index=0, name="violets", stack_bb=98)],
+    )
+    frames = [object(), object(), object(), object()]
+    readings = {
+        id(frames[0]): flop_a,
+        id(frames[1]): flop_b,
+        id(frames[2]): empty_a,
+        id(frames[3]): empty_b,
+    }
+    monkeypatch.setattr("hdpoker.capture.read_image", lambda image: readings[id(image)])
+
+    def grab():
+        return frames.pop(0)
+
+    count = run(tmp_path, interval=0, grab=grab, frames=4)
+    assert count == 2
+    assert len(list(tmp_path.glob("*.json"))) == 2
+    assert len(list(tmp_path.glob("*.txt"))) == 2
+    assert list(tmp_path.glob("*.png")) == []
+
+
+def test_unknown_cards_save_one_frame_beside_the_hand(tmp_path: Path, monkeypatch):
+    image = Image.new("RGB", (8, 8), (10, 20, 30))
+    reading = Reading(
+        board=["unknown", "unknown", "unknown"],
+        hero_seat=0,
+        seats=[SeatReading(index=0, name="violets")],
+    )
+    monkeypatch.setattr("hdpoker.capture.read_image", lambda _image: reading)
+    count = run(tmp_path, interval=0, grab=lambda: image, frames=2)
+    assert count == 1
+    pngs = list(tmp_path.glob("*.png"))
+    assert len(pngs) == 1
+    assert pngs[0].with_suffix(".json").exists()
+
+
 def test_stable_reading_that_ends_a_hand_prints_closed(tmp_path: Path, capsys, monkeypatch):
-    opened = Reading(board=["8c"], hole_cards=["Qh", "Jd"])
-    ended = Reading(board=[], hole_cards=["As", "Kd"])
+    opened = _named(["8c"], ["Qh", "Jd"])
+    ended = _named([], ["As", "Kd"])
     sequence = [opened, opened, ended, ended]
     monkeypatch.setattr("hdpoker.capture.read_image", lambda _image: sequence.pop(0))
 

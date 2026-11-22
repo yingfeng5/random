@@ -299,27 +299,35 @@ def _green_fraction(crop: Image.Image) -> float:
     return float(plate.mean())
 
 
-def _hero_seat_index(image: Image.Image, layout: Layout, seats: list[SeatReading]) -> int | None:
-    """The hero is whoever is sitting on the green plate, found by that name.
+def _face_score(crop: Image.Image) -> float:
+    """White card faces score high. Red card backs score low."""
+    array = np.asarray(crop.convert("RGB"), dtype=np.int16)
+    if array.size == 0:
+        return 0.0
+    red, green, blue = array[:, :, 0], array[:, :, 1], array[:, :, 2]
+    luminance = array.mean(axis=2)
+    white = (luminance > 175) & (np.abs(red - green) < 32) & (np.abs(red - blue) < 40)
+    backs = (red > 140) & (red > green + 25) & (red > blue + 25)
+    return float(white.mean()) - float(backs.mean())
 
-    The green plate moves when the user changes seats. The name on it is looked
-    up among the seats, and that seat's cards are the hole cards.
+
+def _hero_seat_index(image: Image.Image, layout: Layout, _seats: list[SeatReading]) -> int | None:
+    """The hero is the green nameplate, or the only seat with hole cards showing.
+
+    The player's name is whatever is printed on that plate. It is not required
+    to be a particular string.
     """
-    best_index = None
-    best_green = 0.12
-    for seat_layout in layout.seats:
-        green = _green_fraction(seat_layout.plate.crop(image))
-        if green > best_green:
-            best_green = green
-            best_index = seat_layout.index
-    if best_index is None:
-        return None
-    hero = next((seat for seat in seats if seat.index == best_index), None)
-    if hero and hero.name:
-        named = [seat for seat in seats if seat.name == hero.name]
-        if len(named) == 1:
-            return named[0].index
-    return best_index
+    greens = [(_green_fraction(seat.plate.crop(image)), seat.index) for seat in layout.seats]
+    greens.sort(reverse=True)
+    best = greens[0][0]
+    second = greens[1][0] if len(greens) > 1 else 0.0
+    if best >= 0.05 and best >= second + 0.04 and best >= second * 2:
+        return greens[0][1]
+    faces = [(_face_score(seat.cards.crop(image)), seat.index) for seat in layout.seats]
+    faces.sort(reverse=True)
+    if faces and faces[0][0] >= 0.05 and all(score < 0.04 for score, _index in faces[1:]):
+        return faces[0][1]
+    return None
 
 
 def _pot(image: Image.Image, layout: Layout) -> tuple[float | None, str | None]:
