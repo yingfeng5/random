@@ -350,15 +350,59 @@ class HandMachine:
 
 
 def _hand_ended(hand: Hand, previous: Reading | None, reading: Reading) -> bool:
-    if previous is None or not previous.board:
+    """Close the open hand when the next deal is on screen.
+
+    A dealt board that clears while the hole cards change is the old rule.
+    A preflop that never sees a flop still ends when the dealer button moves
+    onto a new blind, or the hole cards change to a different pair. A missing
+    read is not a new hand.
+    """
+    if previous is None or not _hand_has_content(hand):
         return False
+    if previous.board and not reading.board and (
+        _holes_changed(hand.hole_cards, reading.hole_cards) or _button_moved(previous, reading) or _blinds_reposted(previous, reading)
+    ):
+        return True
     if reading.board:
         return False
-    old_cards = hand.hole_cards
-    new_cards = reading.hole_cards
-    if not _cards_known(old_cards) or not _cards_known(new_cards):
+    if _holes_changed(previous.hole_cards, reading.hole_cards):
+        return True
+    return _button_moved(previous, reading) and _blinds_reposted(previous, reading)
+
+
+def _hand_has_content(hand: Hand) -> bool:
+    if _cards_known(hand.hole_cards):
+        return True
+    return any(street.cards or street.actions for street in hand.streets)
+
+
+def _holes_changed(old: list[str] | None, new: list[str] | None) -> bool:
+    if not _cards_known(old) or not _cards_known(new):
         return False
-    return not same_cards(old_cards, new_cards)
+    return not same_cards(old, new)
+
+
+def _button_moved(previous: Reading, reading: Reading) -> bool:
+    return (
+        previous.button_seat is not None
+        and reading.button_seat is not None
+        and previous.button_seat != reading.button_seat
+    )
+
+
+def _blind_posts(reading: Reading) -> frozenset[tuple[int, float]]:
+    return frozenset(
+        (seat.index, seat.bet_bb)
+        for seat in reading.seats
+        if seat.bet_bb in _BLIND_AMOUNTS
+    )
+
+
+def _blinds_reposted(previous: Reading, reading: Reading) -> bool:
+    current = _blind_posts(reading)
+    if not current:
+        return False
+    return current != _blind_posts(previous)
 
 
 def _street_index(reading: Reading) -> int:

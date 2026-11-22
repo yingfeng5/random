@@ -11,7 +11,7 @@ from PIL import Image
 from hdpoker.layout import CABIN, WIDE, layout_for
 from hdpoker.ocrutil import match_status
 from hdpoker.replay import SAMPLE_ORDER, default_sample_dir
-from hdpoker.vision import read_image
+from hdpoker.vision import _clean_name, orient_table, read_image
 
 ROOT = Path(__file__).resolve().parent.parent
 CABIN_IMAGE = ROOT / "samples" / "current-window.png"
@@ -52,6 +52,27 @@ def test_aspect_ratio_picks_the_skin():
     stretched = cabin.resize((1920, 1080))
     assert stretched.size[0] / stretched.size[1] >= 1.70
     assert layout_for(stretched).name == "cabin"
+
+
+def test_ocr_fragments_are_not_seat_names():
+    for fragment in ("mbit", "Fill", "ayout"):
+        assert _clean_name(fragment) is None
+    assert _clean_name("TDawn") == "TDawn"
+    assert _clean_name("Tariq") == "Tariq"
+    assert _clean_name("CoolPush54") == "CoolPush54"
+
+
+def test_an_upside_down_bitblt_frame_is_turned_upright_before_reading():
+    image = Image.open(CABIN_IMAGE)
+    flipped = image.transpose(Image.FLIP_TOP_BOTTOM)
+    assert orient_table(image).size == image.size
+    assert orient_table(flipped).getpixel((image.width // 2, 20)) == orient_table(image).getpixel((image.width // 2, 20))
+    reading = read_image(flipped)
+    assert reading.table_name == "[Standard] The Reef #1"
+    assert (reading.small_blind, reading.big_blind) == (250, 500)
+    assert reading.board == []
+    assert reading.hole_cards == ["Jc", "3h"]
+    assert any(seat.name == "TDawn" for seat in reading.seats)
 
 
 def test_im_back_is_not_an_action_word():

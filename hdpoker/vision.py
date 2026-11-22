@@ -42,10 +42,41 @@ _STRENGTH = {
 }
 
 
+def orient_table(image: Image.Image) -> Image.Image:
+    """Turn a bottom-up BitBlt bitmap upright.
+
+    Windows device bitmaps are often stored bottom-up. A correct frame has the
+    hole cards, a white pair, at the top center. The same window flipped puts
+    that white pair at the bottom, so every fraction lands on the wrong pixels
+    and OCR returns fragments instead of names and cards.
+    """
+    rgb = image.convert("RGB")
+    top = _center_white(rgb, bottom=False)
+    bottom = _center_white(rgb, bottom=True)
+    if bottom > top + 0.05 and bottom > 0.08:
+        return rgb.transpose(Image.FLIP_TOP_BOTTOM)
+    return rgb
+
+
+def _center_white(image: Image.Image, bottom: bool) -> float:
+    width, height = image.size
+    if width < 8 or height < 8:
+        return 0.0
+    y0 = int(height * (0.90 if bottom else 0.0))
+    y1 = int(height * (1.0 if bottom else 0.08))
+    x0, x1 = int(width * 0.42), int(width * 0.58)
+    crop = image.crop((x0, y0, x1, max(y0 + 1, y1)))
+    array = np.asarray(crop.convert("RGB"), dtype=np.int16)
+    red, green, blue = array[:, :, 0], array[:, :, 1], array[:, :, 2]
+    luminance = array.mean(axis=2)
+    white = (luminance > 180) & (np.abs(red - green) < 40) & (np.abs(red - blue) < 45)
+    return float(white.mean())
+
+
 def read_image(image: Image.Image) -> Reading:
     if templates_ready():
         load_templates()
-    rgb = image.convert("RGB")
+    rgb = orient_table(image)
     layout = layout_for(rgb)
     table_name = _table_name(rgb, layout)
     small_blind, big_blind = _blinds(rgb, layout)
@@ -380,9 +411,35 @@ def _read_bright_name(line: Image.Image) -> str | None:
     return _clean_name(parse_name(text))
 
 
+# Pieces of buttons and window chrome. They are not seat names.
+_NOT_NAMES = {
+    "ayout",
+    "back",
+    "call",
+    "chat",
+    "check",
+    "enter",
+    "fill",
+    "fold",
+    "layout",
+    "mbit",
+    "raise",
+    "sitting",
+    "standard",
+    "submit",
+    "waiting",
+}
+
+
 def _clean_name(name: str | None) -> str | None:
     if not name or len(name) < 4:
         return None
+    if name.lower() in _NOT_NAMES:
+        return None
+    # "ayout" is the tail of "Layout". A short shard of a UI word is not a player.
+    for word in ("layout", "submit", "standard", "waiting", "sitting"):
+        if name.lower() != word and word.endswith(name.lower()) and len(name) <= 5:
+            return None
     # Tesseract reads the vertical stroke of "1" as "l" in names like george123.
     return re.sub(r"l(?=\d)", "1", name)
 

@@ -168,6 +168,39 @@ def test_hole_cards_that_disagree_become_unknown():
     assert hand.hole_cards == ["unknown", "unknown"]
 
 
+def test_a_new_preflop_deal_closes_the_previous_hand():
+    machine = HandMachine()
+    first = _reading(
+        [],
+        [_seat(0, "TDawn", bet=1), _seat(5, "Tariq", bet=0.5)],
+        hole=("Jc", "3h"),
+        button=4,
+    )
+    machine.feed(first)
+    done = machine.feed(
+        _reading(
+            [],
+            [_seat(0, "TDawn", bet=0.5), _seat(1, "cowboy", bet=1)],
+            hole=("Ah", "Kd"),
+            button=0,
+        )
+    )
+    assert len(done) == 1
+    assert done[0].hole_cards == ["Jc", "3h"]
+    assert machine.hand is not None
+    assert machine.hand.hole_cards == ["Ah", "Kd"]
+
+
+def test_board_clears_when_the_button_moves_even_without_new_hole_cards():
+    machine = HandMachine()
+    machine.feed(_reading(["8c", "Th", "6s"], [_seat(0, "TDawn")], pot=4, hole=("Jc", "3h"), button=4))
+    done = machine.feed(
+        _reading([], [_seat(1, "TDawn", bet=1), _seat(2, "Tariq", bet=0.5)], hole=("Jc", "3h"), button=5)
+    )
+    assert len(done) == 1
+    assert done[0].streets[-1].cards == ["8c", "Th", "6s"]
+
+
 def test_hand_ends_when_the_board_clears_and_the_hole_cards_change():
     machine = HandMachine()
     machine.feed(_reading(["8c", "Th", "6s"], [_seat(0, "TDawn", "CHECK", stack=99)], pot=4, hole=("Qh", "Jd")))
