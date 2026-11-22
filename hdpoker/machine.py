@@ -359,15 +359,15 @@ def _hand_ended(hand: Hand, previous: Reading | None, reading: Reading) -> bool:
     """
     if previous is None or not _hand_has_content(hand):
         return False
-    if previous.board and not reading.board and (
-        _holes_changed(hand.hole_cards, reading.hole_cards) or _button_moved(previous, reading) or _blinds_reposted(previous, reading)
-    ):
+    # The board going empty is the next deal, even when every card stayed unknown.
+    if previous.board and not reading.board:
+        return True
+    # The dealer button moving to another seat is also the next deal.
+    if _button_moved(previous, reading):
         return True
     if reading.board:
         return False
-    if _holes_changed(previous.hole_cards, reading.hole_cards):
-        return True
-    return _button_moved(previous, reading) and _blinds_reposted(previous, reading)
+    return _holes_changed(previous.hole_cards, reading.hole_cards)
 
 
 def _hand_has_content(hand: Hand) -> bool:

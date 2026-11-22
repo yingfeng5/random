@@ -168,6 +168,29 @@ def test_hole_cards_that_disagree_become_unknown():
     assert hand.hole_cards == ["unknown", "unknown"]
 
 
+def test_an_empty_board_splits_a_hand_when_every_card_is_unknown():
+    machine = HandMachine()
+    seats = [_seat(0, "TDawn"), _seat(3, "SeyhmusE")]
+    machine.feed(_reading(["unknown", "unknown", "unknown"], seats, hole=("unknown", "unknown"), button=3))
+    done = machine.feed(_reading([], seats, hole=("unknown", "unknown"), button=3))
+    assert len(done) == 1
+    assert done[0].streets[1].cards == ["unknown", "unknown", "unknown"]
+    assert machine.hand is not None
+    assert machine.hand.streets[-1].cards == []
+
+
+def test_a_button_move_splits_a_hand_when_every_card_is_unknown():
+    machine = HandMachine()
+    seats = [_seat(0, "TDawn"), _seat(3, "SeyhmusE")]
+    board = ["unknown", "unknown", "unknown"]
+    machine.feed(_reading(board, seats, hole=("unknown", "unknown"), button=3))
+    done = machine.feed(_reading(board, seats, hole=("unknown", "unknown"), button=0))
+    assert len(done) == 1
+    assert done[0].button_seat == 3
+    assert machine.hand is not None
+    assert machine.hand.button_seat == 0
+
+
 def test_a_new_preflop_deal_closes_the_previous_hand():
     machine = HandMachine()
     first = _reading(

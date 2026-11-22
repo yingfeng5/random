@@ -66,6 +66,25 @@ def read_card(image: Image.Image) -> str:
     trimmed = trim_to_face(image)
     if trimmed is None:
         return "unknown"
+    card = _read_trimmed(trimmed)
+    if card != "unknown":
+        return card
+    # The corner pip sometimes sits in the rank window, so the glyph is "8"
+    # plus a blob and both the template and OCR reject it. Drop that pip and
+    # try again. A small live card gets one nearest-neighbor upscale first.
+    if trimmed.width < 48:
+        bigger = trimmed.resize((trimmed.width * 2, trimmed.height * 2), Image.Resampling.NEAREST)
+        card = _read_trimmed(bigger)
+        if card != "unknown":
+            return card
+        trimmed = bigger
+    cleaned = _without_corner_pip(trimmed)
+    if cleaned is None:
+        return "unknown"
+    return _read_trimmed(cleaned)
+
+
+def _read_trimmed(trimmed: Image.Image) -> str:
     rank_glyph, suit_glyph, color = extract_glyphs(trimmed)
     rank = _match(rank_glyph, _RANKS, canvas=(48, RANK_HEIGHT))
     if rank is None:
@@ -76,6 +95,26 @@ def read_card(image: Image.Image) -> str:
     if rank is None or suit is None:
         return "unknown"
     return f"{rank}{suit}"
+
+
+def _without_corner_pip(image: Image.Image) -> Image.Image | None:
+    """Return the same face with the rank glyph limited to its left run."""
+    array = np.asarray(image.convert("RGB"), dtype=np.int16)
+    height, width = array.shape[:2]
+    red, green, blue = array[:, :, 0], array[:, :, 1], array[:, :, 2]
+    black = (red < 105) & (green < 105) & (blue < 105) & (np.abs(red - green) < 45)
+    red_ink = (red > 95) & (red > green + 22) & (red > blue + 22) & (green < 170) & (blue < 170)
+    ink = black | red_ink
+    window = ink[: max(4, int(height * 0.50)), : max(4, int(width * 0.85))]
+    rank, pip = _split_rank_and_suit(window)
+    if rank is None or pip is None:
+        return None
+    # Blank the pip columns so the next extract sees only the rank.
+    cleaned = image.copy()
+    pixels = np.asarray(cleaned).copy()
+    x0 = int(window.shape[1] * 0.62)
+    pixels[: int(height * 0.42), x0:] = 255
+    return Image.fromarray(pixels)
 
 
 def _ocr_rank_face(image: Image.Image) -> str | None:

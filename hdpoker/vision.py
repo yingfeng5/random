@@ -103,7 +103,19 @@ def read_image(image: Image.Image) -> Reading:
     hero_index = _hero_seat_index(rgb, layout, seats)
     hole_seat = None
     if hero_index is not None:
-        hole_seat = _cards_in(layout.seats[hero_index].cards.crop(rgb), limit=2)
+        cards_rect = layout.seats[hero_index].cards
+        hole_seat = _cards_in(cards_rect.crop(rgb), limit=2)
+        if not _pair_known(hole_seat):
+            # The nameplate crop can clip the pips. One wider look, same seat.
+            padded = Rect(
+                max(0.0, cards_rect.x - 0.02),
+                max(0.0, cards_rect.y - 0.02),
+                cards_rect.w + 0.04,
+                cards_rect.h + 0.03,
+            )
+            wider = _cards_in(padded.crop(rgb), limit=2)
+            if _pair_known(wider):
+                hole_seat = wider
     hole = list(hole_seat) if _pair_known(hole_seat) else hole_seat
     return Reading(
         table_name=table_name,
@@ -160,8 +172,33 @@ def _board(image: Image.Image, layout: Layout) -> list[str]:
         crop = slot.crop(image)
         if not _card_present(crop):
             break
-        cards.append(read_card(crop))
+        card = read_card(crop)
+        if card == "unknown":
+            # The slot found the card but clipped the pip. A slightly larger
+            # crop is used only when it is still one card, not the next one.
+            card = _read_widened_slot(image, slot)
+        cards.append(card)
     return cards
+
+
+def _read_widened_slot(image: Image.Image, slot: Rect) -> str:
+    widened = Rect(
+        max(0.0, slot.x - slot.w * 0.35),
+        max(0.0, slot.y - slot.h * 0.2),
+        slot.w * 1.7,
+        slot.h * 1.35,
+    )
+    crop = widened.crop(image)
+    # Two cards merged into one white blob are wider than a single face.
+    array = np.asarray(crop.convert("RGB"), dtype=np.int16)
+    white = array.mean(axis=2) > 175
+    ys, xs = np.where(white)
+    if len(ys) < 25:
+        return "unknown"
+    width = int(xs.max() - xs.min())
+    if width > crop.width * 0.72:
+        return "unknown"
+    return read_card(crop)
 
 
 def _card_present(crop: Image.Image) -> bool:
@@ -471,7 +508,19 @@ def _stack(plate: Image.Image) -> tuple[float | None, str | None]:
 
 
 def _status(image: Image.Image, layout: SeatLayout) -> str | None:
-    area = layout.status.crop(image)
+    plate = layout.plate.crop(image)
+    width, height = plate.size
+    # The action word is on the nameplate, in the bar under the stack.
+    plate_bar = plate.crop((0, int(height * 0.55), width, height))
+    below = layout.status.crop(image)
+    for area in (plate_bar, below):
+        found = _status_in(area)
+        if found in ACTIONS:
+            return found
+    return _status_in(below)
+
+
+def _status_in(area: Image.Image) -> str | None:
     width, height = area.size
     if width < 4 or height < 4:
         return None
